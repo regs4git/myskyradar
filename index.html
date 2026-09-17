@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>MySkyRadar</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/x-icon" href="icons/favicon.ico">
+  <link rel="apple-touch-icon" href="icons/icon-192x192.png">
+  <meta name="theme-color" content="#0f172a">
+  <meta name="description" content="Radar de aviões em tempo real perto de ti.">
+  
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <!-- Google Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- Error / Status Banner -->
+  <div id="status-banner" class="status-banner hidden"></div>
+
+  <!-- Top Controls -->
+  <div class="top-controls">
+    <div class="range-buttons">
+      <button class="range-btn" data-range="1">1 km</button>
+      <button class="range-btn" data-range="3">3 km</button>
+      <button class="range-btn active" data-range="5">5 km</button>
+      <button class="range-btn" data-range="10">10 km</button>
+      <button class="range-btn" data-range="25">25 km</button>
+    </div>
+    <div class="toggle-controls">
+      <label class="toggle-switch">
+        <input type="checkbox" id="sound-toggle">
+        <span class="slider"></span>
+        <span class="label-text">Som</span>
+      </label>
+      <label class="toggle-switch">
+        <input type="checkbox" id="notif-toggle">
+        <span class="slider"></span>
+        <span class="label-text">Alertas</span>
+      </label>
+    </div>
+  </div>
+
+  <!-- Map Container -->
+  <div id="map"></div>
+
+  <!-- Bottom Sheet / Detail Panel -->
+  <div id="bottom-sheet" class="bottom-sheet collapsed">
+    <div class="sheet-handle" id="sheet-handle"></div>
+    
+    <!-- List View (Default) -->
+    <div id="list-view" class="view-section">
+      <h3>Aviões no raio (<span id="plane-count">0</span>)</h3>
+      <div id="plane-list" class="plane-list"></div>
+    </div>
+
+    <!-- Detail View (Hidden by default) -->
+    <div id="detail-view" class="view-section hidden">
+      <button class="back-btn" id="back-to-list">← Voltar à lista</button>
+      <div class="detail-card">
+        <div class="detail-header">
+          <h2 id="d-callsign">---</h2>
+          <span id="d-company" class="badge">---</span>
+          <span id="d-military" class="badge military hidden">MILITAR</span>
+        </div>
+        <div class="detail-grid">
+          <div class="detail-item">
+            <span class="label">Distância</span>
+            <span class="value" id="d-distance">---</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">Tendência</span>
+            <span class="value" id="d-trend">---</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">Altitude</span>
+            <span class="value" id="d-altitude">---</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">Velocidade</span>
+            <span class="value" id="d-speed">---</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">Direção</span>
+            <span class="value" id="d-heading">---</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">ICAO24</span>
+            <span class="value" id="d-icao24">---</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">Squawk</span>
+            <span class="value" id="d-squawk">---</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">Atualizado</span>
+            <span class="value" id="d-age">---</span>
+          </div>
+        </div>
+        <div class="detail-links">
+          <a id="link-fr24" href="#" target="_blank" class="ext-link">Ver no Flightradar24</a>
+          <a id="link-fa" href="#" target="_blank" class="ext-link">Ver no FlightAware</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="app-footer">
+    <p>Dados: OpenSky Network · Mapas: © OpenStreetMap</p>
+    <p class="signature">Piquinho Software — Crafted with altitude. Built with joy.</p>
+  </footer>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
