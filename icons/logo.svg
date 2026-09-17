@@ -1,0 +1,8 @@
+<!-- icons/logo.svg -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <circle cx="256" cy="256" r="240" fill="#0f172a" stroke="#3b82f6" stroke-width="16"/>
+  <circle cx="256" cy="256" r="160" fill="none" stroke="#3b82f6" stroke-width="4" stroke-dasharray="20 10" opacity="0.5"/>
+  <circle cx="256" cy="256" r="80" fill="none" stroke="#3b82f6" stroke-width="4" opacity="0.3"/>
+  <path d="M256 120 L280 220 L380 240 L280 260 L256 360 L232 260 L132 240 L232 220 Z" fill="#ffffff"/>
+  <circle cx="256" cy="256" r="12" fill="#3b82f6"/>
+</svg>
