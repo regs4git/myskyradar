@@ -2,11 +2,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const CONFIG = {
     defaultLat: 38.736946,
     defaultLon: -9.142685,
-    pollInterval: 15000,
+    pollInterval: 15000, // 15 segundos
     alertRadius: 3000,
     alertAltitude: 1500,
-    // PROXY CORS OBRIGATÓRIO para GitHub Pages
-    proxy: 'https://api.allorigins.win/raw?url='
+    // NOVO PROXY: Mais rápido e estável que o anterior
+    proxy: 'https://corsproxy.io/?'
   };
 
   const state = {
@@ -118,25 +118,21 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   const fetchData = async () => {
-    showStatus('A carregar dados...');
-    
-    // URL da OpenSky
+    // Não mostramos "A carregar..." a cada 15s para não piscar o ecrã, só se falhar
     const degRange = (state.range / 111) + 0.1;
     const targetUrl = `https://opensky-network.org/api/states/all?lamin=${state.lat - degRange}&lomin=${state.lon - degRange}&lamax=${state.lat + degRange}&lomax=${state.lon + degRange}`;
     
-    // URL FINAL com o Proxy CORS (isto é o que o navegador vai realmente pedir)
+    // URL FINAL com o novo Proxy
     const finalUrl = CONFIG.proxy + encodeURIComponent(targetUrl);
-    
-    console.log('[MySkyRadar] A pedir dados via Proxy:', finalUrl);
 
     try {
-      const res = await fetch(finalUrl, { signal: AbortSignal.timeout(10000) });
+      // Aumentado para 15 segundos para evitar timeouts em redes lentas
+      const res = await fetch(finalUrl, { signal: AbortSignal.timeout(15000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       
       const data = await res.json();
       if (!data.states || data.states.length === 0) {
         updateUI([]);
-        hideStatus();
         return;
       }
 
@@ -197,8 +193,13 @@ document.addEventListener('DOMContentLoaded', () => {
       hideStatus();
       
     } catch (err) {
-      console.error('Erro na API:', err);
-      showStatus('Erro ao obter dados. Verifica a tua internet.', 'error');
+      console.warn('Timeout ou erro de rede no proxy. A tentar novamente no próximo ciclo...', err.message);
+      // Só mostramos erro no ecrã se falhar várias vezes seguidas, para não ser intrusivo
+      if (err.name === 'TimeoutError' || err.message.includes('Failed to fetch')) {
+        showStatus('Ligação lenta. A tentar novamente...', 'info');
+      } else {
+        showStatus('Erro ao obter dados.', 'error');
+      }
     }
   };
 
@@ -323,5 +324,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   initGeo();
+  // Primeira carga imediata, depois o intervalo
+  fetchData();
   setInterval(fetchData, CONFIG.pollInterval);
 });
