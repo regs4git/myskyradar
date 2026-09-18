@@ -2,18 +2,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const CONFIG = {
     defaultLat: 38.736946,
     defaultLon: -9.142685,
-    pollInterval: 20000, // 20 segundos (menos agressivo)
+    pollInterval: 20000, // 20 segundos
     alertRadius: 3000,
     alertAltitude: 1500,
-    // MÚLTIPLOS PROXIES CORS em fallback
-    proxies: [
-      'https://corsproxy.io/?',
-      'https://api.allorigins.win/raw?url=',
-      'https://api.codetabs.com/v1/proxy?quest='
-    ],
-    currentProxyIndex: 0,
-    retryDelay: 5000, // 5 segundos entre retries
-    maxRetries: 3
+    apiBase: 'https://api.adsb.lol/v2/point' // API gratuita, sem chave, CORS aberto — sem proxy necessário
   };
 
   const state = {
@@ -28,7 +20,8 @@ document.addEventListener('DOMContentLoaded', () => {
     rangeCircle: null,
     trailLine: null,
     notifiedPlanes: new Set(),
-    consecutiveFailures: 0
+    consecutiveFailures: 0,
+    isFetching: false
   };
 
   const map = L.map('map', { zoomControl: false }).setView([state.lat, state.lon], 11);
@@ -126,104 +119,93 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   const fetchData = async () => {
-    const degRange = (state.range / 111) + 0.1;
-    const targetUrl = `https://opensky-network.org/api/states/all?lamin=${state.lat - degRange}&lomin=${state.lon - degRange}&lamax=${state.lat + degRange}&lomax=${state.lon + degRange}`;
+    if (state.isFetching) return; // evita pedidos sobrepostos
+    state.isFetching = true;
 
-    // Tentar cada proxy em ordem
-    for (let i = 0; i < CONFIG.proxies.length; i++) {
-      const proxyIndex = (CONFIG.currentProxyIndex + i) % CONFIG.proxies.length;
-      const proxy = CONFIG.proxies[proxyIndex];
-      const finalUrl = proxy + encodeURIComponent(targetUrl);
+    // adsb.lol espera o raio em milhas náuticas (máx. 250), com uma margem extra
+    const radiusNm = Math.min(Math.ceil(state.range * 0.54 + 2), 250);
+    const url = `${CONFIG.apiBase}/${state.lat}/${state.lon}/${radiusNm}`;
 
-      console.log(`[MySkyRadar] Tentando proxy ${proxyIndex + 1}/${CONFIG.proxies.length}`);
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-      try {
-        const res = await fetch(finalUrl, { signal: AbortSignal.timeout(12000) });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        
-        const data = await res.json();
-        if (!data.states || data.states.length === 0) {
-          updateUI([]);
-          hideStatus();
-          state.consecutiveFailures = 0;
-          CONFIG.currentProxyIndex = proxyIndex; // Guardar qual proxy funcionou
-          return;
-        }
+      const data = await res.json();
+      const aircraft = data.ac || [];
 
-        const now = Date.now() / 1000;
-        const newPlanes = new Map();
-
-        data.states.forEach(s => {
-          const icao24 = s[0];
-          const callsign = s[1] ? s[1].trim() : 'N/D';
-          const country = s[2] || 'Desconhecido';
-          const lon = s[5];
-          const lat = s[6];
-          const baroAlt = s[7];
-          const velocity = s[9];
-          const heading = s[10];
-          const squawk = s[14];
-          const onGround = s[8];
-          const lastContact = s[4];
-
-          if (onGround || lat === null || lon === null) return;
-
-          const dist = getDistance(state.lat, state.lon, lat, lon);
-          if (dist > state.range * 1000) return;
-
-          const prev = state.planes.get(icao24);
-          const isApproaching = prev ? dist < prev.dist : false;
-          const isMil = ['POR', 'FAB', 'ARMY', 'NAVY', 'MIL', 'RESCUE'].some(k => callsign.includes(k));
-
-          const plane = {
-            icao24, callsign, country, lat, lon,
-            altitude: baroAlt !== null ? Math.round(baroAlt) : 0,
-            speed: velocity !== null ? Math.round(velocity * 3.6) : 0,
-            heading: heading !== null ? Math.round(heading) : 0,
-            squawk: squawk || 'N/D',
-            dist, isApproaching, isMil,
-            isAlert: squawk === '7700' || squawk === '7500' || squawk === '7600',
-            lastContact
-          };
-
-          newPlanes.set(icao24, plane);
-
-          if (state.notifEnabled && !state.notifiedPlanes.has(icao24)) {
-            if (dist <= CONFIG.alertRadius && plane.altitude <= CONFIG.alertAltitude) {
-              state.notifiedPlanes.add(icao24);
-              playBlip();
-              if (Notification.permission === 'granted') {
-                new Notification(`MySkyRadar: ${callsign}`, {
-                  body: `A ${(dist/1000).toFixed(1)} km, ${plane.altitude}m.`,
-                  icon: 'icons/icon-192x192.png'
-                });
-              }
-            }
-          }
-        });
-
-        state.planes = newPlanes;
-        updateUI();
+      if (aircraft.length === 0) {
+        state.planes = new Map();
+        updateUI([]);
         hideStatus();
         state.consecutiveFailures = 0;
-        CONFIG.currentProxyIndex = proxyIndex;
-        console.log(`[MySkyRadar] Sucesso com proxy ${proxyIndex + 1}`);
-        return; // Sucesso, sair do loop
-        
-      } catch (err) {
-        console.warn(`[MySkyRadar] Proxy ${proxyIndex + 1} falhou:`, err.message);
-        continue; // Tentar próximo proxy
+        return;
       }
-    }
 
-    // Todos os proxies falharam
-    state.consecutiveFailures++;
-    console.error(`[MySkyRadar] Todos os proxies falharam (tentativa ${state.consecutiveFailures})`);
-    
-    if (state.consecutiveFailures >= 3) {
-      showStatus('Problema de ligação. A tentar novamente...', 'error');
-    } else {
-      showStatus('Ligação lenta. A tentar novamente...', 'info');
+      const now = Date.now() / 1000;
+      const newPlanes = new Map();
+
+      aircraft.forEach(a => {
+        const icao24 = a.hex;
+        const lat = a.lat, lon = a.lon;
+        if (!icao24 || lat === undefined || lon === undefined) return;
+        if (a.alt_baro === 'ground') return; // avião no chão, ignorar
+
+        const callsign = a.flight ? a.flight.trim() : 'N/D';
+        const info = a.t || a.r || 'Desconhecido'; // tipo ICAO ou matrícula (adsb.lol não dá país de origem)
+        const baroAltFt = typeof a.alt_baro === 'number' ? a.alt_baro : null;
+        const gsKt = typeof a.gs === 'number' ? a.gs : null;
+        const heading = typeof a.track === 'number' ? a.track : null;
+        const squawk = (a.squawk !== undefined && a.squawk !== null) ? String(a.squawk).padStart(4, '0') : 'N/D';
+
+        const dist = getDistance(state.lat, state.lon, lat, lon);
+        if (dist > state.range * 1000) return;
+
+        const prev = state.planes.get(icao24);
+        const isApproaching = prev ? dist < prev.dist : false;
+        const isMil = a.category === 'A7' || ['POR', 'FAB', 'ARMY', 'NAVY', 'MIL', 'RESCUE'].some(k => callsign.includes(k));
+
+        const plane = {
+          icao24, callsign, country: info, lat, lon,
+          altitude: baroAltFt !== null ? Math.round(baroAltFt * 0.3048) : 0, // pés → metros
+          speed: gsKt !== null ? Math.round(gsKt * 1.852) : 0, // nós → km/h
+          heading: heading !== null ? Math.round(heading) : 0,
+          squawk,
+          dist, isApproaching, isMil,
+          isAlert: squawk === '7700' || squawk === '7500' || squawk === '7600',
+          lastContact: now
+        };
+
+        newPlanes.set(icao24, plane);
+
+        if (state.notifEnabled && !state.notifiedPlanes.has(icao24)) {
+          if (dist <= CONFIG.alertRadius && plane.altitude <= CONFIG.alertAltitude) {
+            state.notifiedPlanes.add(icao24);
+            playBlip();
+            if (Notification.permission === 'granted') {
+              new Notification(`MySkyRadar: ${callsign}`, {
+                body: `A ${(dist/1000).toFixed(1)} km, ${plane.altitude}m.`,
+                icon: 'icons/icon-192x192.png'
+              });
+            }
+          }
+        }
+      });
+
+      state.planes = newPlanes;
+      updateUI();
+      hideStatus();
+      state.consecutiveFailures = 0;
+
+    } catch (err) {
+      console.warn('[MySkyRadar] Falha ao obter dados:', err.message);
+      state.consecutiveFailures++;
+      if (state.consecutiveFailures >= 3) {
+        showStatus('Problema de ligação. A tentar novamente...', 'error');
+      } else {
+        showStatus('Ligação lenta. A tentar novamente...', 'info');
+      }
+    } finally {
+      state.isFetching = false;
     }
   };
 
