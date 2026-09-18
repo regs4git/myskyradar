@@ -1,4 +1,7 @@
-const CACHE_NAME = 'myskyradar-v1';
+// VERSÃO DA CACHE - Incrementar sempre que houver alterações
+const CACHE_VERSION = 'v1.0';
+const CACHE_NAME = `myskyradar-${CACHE_VERSION}`;
+
 const ASSETS = [
   '/',
   '/index.html',
@@ -10,6 +13,7 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', (e) => {
+  console.log(`[SW] Instalando versão ${CACHE_VERSION}`);
   e.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS))
   );
@@ -17,10 +21,14 @@ self.addEventListener('install', (e) => {
 });
 
 self.addEventListener('activate', (e) => {
+  console.log(`[SW] Ativando versão ${CACHE_VERSION}`);
   e.waitUntil(
     caches.keys().then((keys) => {
       return Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
+        keys.filter((key) => key !== CACHE_NAME).map((key) => {
+          console.log(`[SW] A apagar cache antiga: ${key}`);
+          return caches.delete(key);
+        })
       );
     })
   );
@@ -31,7 +39,6 @@ self.addEventListener('fetch', (e) => {
   e.respondWith(
     caches.match(e.request).then((response) => {
       return response || fetch(e.request).catch(() => {
-        // Fallback offline simples
         if (e.request.mode === 'navigate') {
           return caches.match('/index.html');
         }
