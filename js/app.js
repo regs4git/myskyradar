@@ -126,49 +126,83 @@ document.addEventListener('DOMContentLoaded', () => {
       state.rangeCircle = L.circle([state.lat, state.lon], { radius: state.range * 1000, color: '#3b82f6', fillColor: '#3b82f6', fillOpacity: 0.05, weight: 1, dashArray: '5, 5' }).addTo(map);
     };
 
-    const fetchData = async () => {
-      try {
-        const url = `${CONFIG.apiBase}/lat/${state.lat}/lon/${state.lon}/dist/${state.range}/alt/10000`;
-        const res = await fetch(url);
-        if (!res.ok) throw new Error('Falha na API');
-        const data = await res.json();
-        if (!data.ac || data.ac.length === 0) { updateUI([]); return; }
-        const now = Date.now() / 1000;
-        const newPlanes = new Map();
-        data.ac.forEach(ac => {
-          if (!ac.lat || !ac.lon || ac.alt_baro === undefined) return;
-          const dist = getDistance(state.lat, state.lon, ac.lat, ac.lon);
-          if (dist > state.range * 1000) return;
-          const icao24 = ac.hex;
-          const callsign = ac.flight ? ac.flight.trim() : 'N/D';
-          const altitudeM = Math.round(ac.alt_baro * 0.3048);
-          const speedKmh = ac.gs ? Math.round(ac.gs * 1.852) : 0;
-          const heading = ac.track ? Math.round(ac.track) : 0;
-          const seen = ac.seen || 0;
-          const isMil = ac.military === true || (callsign && ['POR', 'FAB', 'ARMY', 'NAVY', 'MIL', 'RESCUE'].some(k => callsign.includes(k)));
-          const prev = state.planes.get(icao24);
-          const isApproaching = prev ? dist < prev.dist : false;
-          const plane = { icao24, callsign, country: ac.r || 'Desconhecido', lat: ac.lat, lon: ac.lon, altitude: altitudeM, speed: speedKmh, heading, squawk: ac.squawk || 'N/D', dist, isApproaching, isMil, isAlert: ac.squawk === '7700' || ac.squawk === '7500' || ac.squawk === '7600', lastContact: now - seen };
-          newPlanes.set(icao24, plane);
-          if (state.notifEnabled && !state.notifiedPlanes.has(icao24)) {
-            if (dist <= CONFIG.alertRadius && plane.altitude <= CONFIG.alertAltitude) {
-              state.notifiedPlanes.add(icao24);
-              playBlip();
-              if (Notification.permission === 'granted') {
-                new Notification(`MySkyRadar: ${callsign}`, { body: `A ${(dist/1000).toFixed(1)} km, ${altitudeM}m.`, icon: 'icons/icon-192x192.png' });
-              }
-            }
+// Substitui a função fetchData por esta versão corrigida
+const fetchData = async () => {
+  try {
+    // CORREÇÃO: ADSB.lol usa milhas náuticas (1 nm = 1.852 km)
+    const rangeNm = (state.range / 1.852).toFixed(1);
+    const url = `${CONFIG.apiBase}/point/${state.lat}/${state.lon}/${rangeNm}`;
+    
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`API retornou ${res.status}. URL: ${url}`);
+    }
+    const data = await res.json();
+    
+    if (!data.ac || data.ac.length === 0) {
+      updateUI([]);
+      return;
+    }
+
+    const now = Date.now() / 1000;
+    const newPlanes = new Map();
+
+    data.ac.forEach(ac => {
+      if (!ac.lat || !ac.lon || ac.alt_baro === undefined) return;
+
+      const dist = getDistance(state.lat, state.lon, ac.lat, ac.lon);
+      if (dist > state.range * 1000) return;
+
+      const icao24 = ac.hex;
+      const callsign = ac.flight ? ac.flight.trim() : 'N/D';
+      const altitudeM = Math.round(ac.alt_baro * 0.3048);
+      const speedKmh = ac.gs ? Math.round(ac.gs * 1.852) : 0;
+      const heading = ac.track ? Math.round(ac.track) : 0;
+      const seen = ac.seen || 0;
+
+      const isMil = ac.military === true || (callsign && ['POR', 'FAB', 'ARMY', 'NAVY', 'MIL', 'RESCUE'].some(k => callsign.includes(k)));
+
+      const prev = state.planes.get(icao24);
+      const isApproaching = prev ? dist < prev.dist : false;
+
+      const plane = {
+        icao24, callsign, country: ac.r || 'Desconhecido',
+        lat: ac.lat, lon: ac.lon,
+        altitude: altitudeM,
+        speed: speedKmh,
+        heading,
+        squawk: ac.squawk || 'N/D',
+        dist, isApproaching, isMil,
+        isAlert: ac.squawk === '7700' || ac.squawk === '7500' || ac.squawk === '7600',
+        lastContact: now - seen
+      };
+
+      newPlanes.set(icao24, plane);
+
+      // Notificações
+      if (state.notifEnabled && !state.notifiedPlanes.has(icao24)) {
+        if (dist <= CONFIG.alertRadius && plane.altitude <= CONFIG.alertAltitude) {
+          state.notifiedPlanes.add(icao24);
+          playBlip();
+          if (Notification.permission === 'granted') {
+            new Notification(`MySkyRadar: ${callsign}`, {
+              body: `A ${(dist/1000).toFixed(1)} km, ${altitudeM}m. ${isApproaching ? 'A aproximar-se.' : 'A afastar-se.'}`,
+              icon: 'icons/icon-192x192.png'
+            });
           }
-        });
-        state.planes = newPlanes;
-        state.lastUpdate = now;
-        updateUI();
-        hideStatus();
-      } catch (err) {
-        console.error(err);
-        showStatus('Erro ao obter dados.', 'error');
+        }
       }
-    };
+    });
+
+    state.planes = newPlanes;
+    state.lastUpdate = now;
+    updateUI();
+    hideStatus();
+  } catch (err) {
+    console.error('Erro na API:', err);
+    showStatus(`Erro ao obter dados: ${err.message}`, 'error');
+  }
+};
 
     const updateUI = (planesOverride = null) => {
       const planesToRender = planesOverride !== null ? planesOverride : Array.from(state.planes.values());
