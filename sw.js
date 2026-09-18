@@ -3,13 +3,13 @@ const CACHE_VERSION = 'v1.2';
 const CACHE_NAME = `myskyradar-${CACHE_VERSION}`;
 
 const ASSETS = [
-  './',
-  './index.html',
-  './css/style.css',
-  './js/app.js',
-  './manifest.json',
-  './icons/icon-192x192.png',
-  './icons/icon-512x512.png'
+  '/',
+  '/index.html',
+  '/css/style.css',
+  '/js/app.js',
+  '/manifest.json',
+  '/icons/icon-192x192.png',
+  '/icons/icon-512x512.png'
 ];
 
 self.addEventListener('install', (e) => {
@@ -36,12 +36,20 @@ self.addEventListener('activate', (e) => {
 });
 
 self.addEventListener('fetch', (e) => {
+  const url = new URL(e.request.url);
+
+  // Deixar passar pedidos cross-origin (ex. api.adsb.lol) sem os intercetar —
+  // o SW só deve tratar dos assets da própria app.
+  if (url.origin !== self.location.origin) return;
+
   e.respondWith(
     caches.match(e.request).then((response) => {
-      return response || fetch(e.request).catch(() => {
+      if (response) return response;
+      return fetch(e.request).catch((err) => {
         if (e.request.mode === 'navigate') {
-          return caches.match('/index.html');
+          return caches.match('./index.html');
         }
+        throw err;
       });
     })
   );
