@@ -348,6 +348,5 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   initGeo();
-  fetchData();
   setInterval(fetchData, CONFIG.pollInterval);
 });
