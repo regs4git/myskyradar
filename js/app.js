@@ -3,46 +3,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const CONFIG = {
       defaultLat: 38.736946,
       defaultLon: -9.142685,
-      pollInterval: 15000, // 15s para ser conservador
+      pollInterval: 15000, // 15 segundos
       alertRadius: 3000,
       alertAltitude: 1500,
-      // Lista de APIs por ordem de preferência (com fallback automático)
-      apis: [
-        {
-          name: 'Airplanes.live',
-          url: (lat, lon, rangeKm) => `https://api.airplanes.live/v2/point/${lat}/${lon}/${(rangeKm / 1.852).toFixed(0)}`,
-          parser: (data) => data.ac || []
-        },
-        {
-          name: 'ADSB.lol',
-          url: (lat, lon, rangeKm) => `https://api.adsb.lol/v2/point/${lat}/${lon}/${(rangeKm / 1.852).toFixed(0)}`,
-          parser: (data) => data.ac || []
-        },
-        {
-          name: 'OpenSky',
-          url: (lat, lon, rangeKm) => {
-            const degRange = rangeKm / 111;
-            return `https://opensky-network.org/api/states/all?lamin=${lat - degRange}&lomin=${lon - degRange}&lamax=${lat + degRange}&lomax=${lon + degRange}`;
-          },
-          parser: (data) => {
-            if (!data.states) return [];
-            return data.states.map(s => ({
-              hex: s[0],
-              flight: s[1],
-              r: s[2],
-              lat: s[6],
-              lon: s[5],
-              alt_baro: s[7] !== null ? s[7] / 0.3048 : null, // metros para pés
-              gs: s[9] !== null ? s[9] / 1.852 : null, // m/s para nós
-              track: s[10],
-              squawk: s[14],
-              seen: Date.now() / 1000 - s[4],
-              military: false,
-              on_ground: s[8]
-            }));
-          }
-        }
-      ]
+      // Usamos um proxy CORS para contornar o bloqueio do navegador no GitHub Pages
+      corsProxy: 'https://api.allorigins.win/raw?url='
     };
 
     const state = {
@@ -57,8 +22,7 @@ document.addEventListener('DOMContentLoaded', () => {
       rangeCircle: null,
       trailLine: null,
       notifiedPlanes: new Set(),
-      lastUpdate: 0,
-      currentApiIndex: 0
+      lastUpdate: 0
     };
 
     const map = L.map('map', { zoomControl: false }).setView([state.lat, state.lon], 11);
@@ -112,7 +76,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const banner = document.getElementById('status-banner');
       banner.textContent = msg;
       banner.className = `status-banner visible ${type}`;
-      setTimeout(() => banner.classList.remove('visible'), 4000);
+      setTimeout(() => banner.classList.remove('visible'), 5000);
     };
     const hideStatus = () => document.getElementById('status-banner').classList.remove('visible');
 
@@ -156,113 +120,98 @@ document.addEventListener('DOMContentLoaded', () => {
         [state.lat - latDelta, state.lon - lonDelta],
         [state.lat + latDelta, state.lon + lonDelta]
       );
-      map.flyToBounds(bounds, { padding: [50, 50], duration: 1, maxZoom: 15 });
+      map.flyToBounds(bounds, { padding: [50, 50], duration: 1, maxZoom:15 });
     };
 
     const fetchData = async () => {
-      showStatus('A carregar dados...');
+      showStatus('A carregar dados de voo...');
       
-      // Tentar cada API em ordem até uma funcionar
-      for (let i = 0; i < CONFIG.apis.length; i++) {
-        const api = CONFIG.apis[i];
-        const url = api.url(state.lat, state.lon, state.range);
+      // Aumentamos ligeiramente o range em graus para garantir que apanhamos aviões nas bordas
+      const degRange = (state.range / 111) + 0.1; 
+      const targetUrl = `https://opensky-network.org/api/states/all?lamin=${state.lat - degRange}&lomin=${state.lon - degRange}&lamax=${state.lat + degRange}&lomax=${state.lon + degRange}`;
+      
+      // Usamos o proxy CORS para evitar o bloqueio do navegador
+      const proxyUrl = CONFIG.corsProxy + encodeURIComponent(targetUrl);
+
+      try {
+        const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(10000) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         
-        console.log(`[MySkyRadar] Tentando ${api.name}: ${url}`);
-        
-        try {
-          const res = await fetch(url, { 
-            signal: AbortSignal.timeout(8000) // Timeout de 8s
-          });
-          
-          if (!res.ok) {
-            console.warn(`[MySkyRadar] ${api.name} retornou ${res.status}`);
-            continue; // Tentar próxima API
-          }
-          
-          const data = await res.json();
-          const rawPlanes = api.parser(data);
-          
-          console.log(`[MySkyRadar] ${api.name} retornou ${rawPlanes.length} aviões`);
-          
-          if (rawPlanes.length === 0) {
-            updateUI([]);
-            hideStatus();
-            return;
-          }
+        const data = await res.json();
+        if (!data.states || data.states.length === 0) {
+          updateUI([]);
+          hideStatus();
+          return;
+        }
 
-          const now = Date.now() / 1000;
-          const newPlanes = new Map();
+        const now = Date.now() / 1000;
+        const newPlanes = new Map();
 
-          rawPlanes.forEach(ac => {
-            if (!ac.lat || !ac.lon) return;
-            if (ac.on_ground === true) return; // Filtrar aviões em solo
+        data.states.forEach(s => {
+          const icao24 = s[0];
+          const callsign = s[1] ? s[1].trim() : 'N/D';
+          const country = s[2] || 'Desconhecido';
+          const lon = s[5];
+          const lat = s[6];
+          const baroAlt = s[7];
+          const velocity = s[9];
+          const heading = s[10];
+          const squawk = s[14];
+          const onGround = s[8];
+          const lastContact = s[4];
 
-            const dist = getDistance(state.lat, state.lon, ac.lat, ac.lon);
-            if (dist > state.range * 1000) return;
+          if (onGround || lat === null || lon === null) return;
 
-            const icao24 = ac.hex;
-            const callsign = ac.flight ? ac.flight.trim() : 'N/D';
-            const altitudeM = ac.alt_baro !== null ? Math.round(ac.alt_baro * 0.3048) : 0;
-            const speedKmh = ac.gs ? Math.round(ac.gs * 1.852) : 0;
-            const heading = ac.track ? Math.round(ac.track) : 0;
-            const seen = ac.seen || 0;
+          const dist = getDistance(state.lat, state.lon, lat, lon);
+          if (dist > state.range * 1000) return;
 
-            const isMil = ac.military === true || (callsign && ['POR', 'FAB', 'ARMY', 'NAVY', 'MIL', 'RESCUE'].some(k => callsign.includes(k)));
+          const prev = state.planes.get(icao24);
+          const isApproaching = prev ? dist < prev.dist : false;
+          const isMil = ['POR', 'FAB', 'ARMY', 'NAVY', 'MIL', 'RESCUE'].some(k => callsign.includes(k));
 
-            const prev = state.planes.get(icao24);
-            const isApproaching = prev ? dist < prev.dist : false;
+          const plane = {
+            icao24, callsign, country, lat, lon,
+            altitude: baroAlt !== null ? Math.round(baroAlt) : 0,
+            speed: velocity !== null ? Math.round(velocity * 3.6) : 0,
+            heading: heading !== null ? Math.round(heading) : 0,
+            squawk: squawk || 'N/D',
+            dist, isApproaching, isMil,
+            isAlert: squawk === '7700' || squawk === '7500' || squawk === '7600',
+            lastContact
+          };
 
-            const plane = {
-              icao24, callsign, country: ac.r || 'Desconhecido',
-              lat: ac.lat, lon: ac.lon,
-              altitude: altitudeM,
-              speed: speedKmh,
-              heading,
-              squawk: ac.squawk || 'N/D',
-              dist, isApproaching, isMil,
-              isAlert: ac.squawk === '7700' || ac.squawk === '7500' || ac.squawk === '7600',
-              lastContact: now - seen
-            };
+          newPlanes.set(icao24, plane);
 
-            newPlanes.set(icao24, plane);
-
-            if (state.notifEnabled && !state.notifiedPlanes.has(icao24)) {
-              if (dist <= CONFIG.alertRadius && plane.altitude <= CONFIG.alertAltitude) {
-                state.notifiedPlanes.add(icao24);
-                playBlip();
-                if (Notification.permission === 'granted') {
-                  new Notification(`MySkyRadar: ${callsign}`, {
-                    body: `A ${(dist/1000).toFixed(1)} km, ${altitudeM}m.`,
-                    icon: 'icons/icon-192x192.png'
-                  });
-                }
+          if (state.notifEnabled && !state.notifiedPlanes.has(icao24)) {
+            if (dist <= CONFIG.alertRadius && plane.altitude <= CONFIG.alertAltitude) {
+              state.notifiedPlanes.add(icao24);
+              playBlip();
+              if (Notification.permission === 'granted') {
+                new Notification(`MySkyRadar: ${callsign}`, {
+                  body: `A ${(dist/1000).toFixed(1)} km, ${plane.altitude}m.`,
+                  icon: 'icons/icon-192x192.png'
+                });
               }
             }
-          });
+          }
+        });
 
-          state.planes = newPlanes;
-          state.lastUpdate = now;
-          state.currentApiIndex = i; // Guardar qual API funcionou
-          updateUI();
-          hideStatus();
-          console.log(`[MySkyRadar] Sucesso com ${api.name}`);
-          return; // Sucesso, sair do loop
-          
-        } catch (err) {
-          console.warn(`[MySkyRadar] ${api.name} falhou:`, err.message);
-          continue; // Tentar próxima API
-        }
+        state.planes = newPlanes;
+        state.lastUpdate = now;
+        updateUI();
+        hideStatus();
+        
+      } catch (err) {
+        console.error('Erro na API:', err);
+        showStatus('Erro ao obter dados. Verifica a tua internet ou desativa o AdBlock.', 'error');
       }
-      
-      // Se chegou aqui, todas as APIs falharam
-      console.error('[MySkyRadar] Todas as APIs falharam');
-      showStatus('Erro: todas as APIs de dados falharam. Verifica a tua ligação à internet.', 'error');
     };
 
     const updateUI = (planesOverride = null) => {
       const planesToRender = planesOverride !== null ? planesOverride : Array.from(state.planes.values());
       map.eachLayer(layer => { if (layer instanceof L.Marker && layer !== state.userMarker) map.removeLayer(layer); });
       if (state.trailLine) { map.removeLayer(state.trailLine); state.trailLine = null; }
+      
       const sortedPlanes = [...planesToRender].sort((a, b) => a.dist - b.dist);
       sortedPlanes.forEach(p => {
         const isSelected = state.selectedPlane === p.icao24;
@@ -274,17 +223,30 @@ document.addEventListener('DOMContentLoaded', () => {
           state.trailLine = L.polyline([[p.lat, p.lon], [p.lat + Math.cos(rad)*0.015, p.lon + Math.sin(rad)*0.015]], { color: '#eab308', weight: 3, dashArray: '4, 4' }).addTo(map);
         }
       });
+
       document.getElementById('plane-count').textContent = sortedPlanes.length;
       const listEl = document.getElementById('plane-list');
       listEl.innerHTML = sortedPlanes.length === 0 ? '<div style="text-align:center; color:var(--text-secondary); padding:20px;">Sem aviões no raio.</div>' : '';
+      
       sortedPlanes.forEach(p => {
         const div = document.createElement('div');
         div.className = `plane-item ${state.selectedPlane === p.icao24 ? 'selected' : ''}`;
-        div.innerHTML = `<div><div class="pi-callsign">${p.callsign}</div><div class="pi-company">${p.country} ${p.isMil ? '• MILITAR' : ''}</div></div><div class="pi-alt">${p.altitude} m</div><div class="pi-dist">${(p.dist/1000).toFixed(1)} km</div>`;
+        div.innerHTML = `
+          <div>
+            <div class="pi-callsign">${p.callsign}</div>
+            <div class="pi-company">${p.country} ${p.isMil ? '• MILITAR' : ''}</div>
+          </div>
+          <div class="pi-alt">${p.altitude} m</div>
+          <div class="pi-dist">${(p.dist/1000).toFixed(1)} km</div>
+        `;
         div.onclick = () => selectPlane(p.icao24);
         listEl.appendChild(div);
       });
-      if (state.selectedPlane) { const p = state.planes.get(state.selectedPlane); if (p) renderDetail(p); else closeDetail(); }
+
+      if (state.selectedPlane) { 
+        const p = state.planes.get(state.selectedPlane); 
+        if (p) renderDetail(p); else closeDetail(); 
+      }
     };
 
     const selectPlane = (icao24) => {
@@ -309,22 +271,29 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('d-company').textContent = p.country;
       const milBadge = document.getElementById('d-military');
       if (p.isMil) milBadge.classList.remove('hidden'); else milBadge.classList.add('hidden');
+      
       document.getElementById('d-distance').textContent = `${(p.dist/1000).toFixed(2)} km`;
       const trendEl = document.getElementById('d-trend');
       trendEl.textContent = p.isApproaching ? 'A aproximar-se ↘' : 'A afastar-se ↗';
       trendEl.style.color = p.isApproaching ? 'var(--success)' : 'var(--text-secondary)';
+      
       document.getElementById('d-altitude').textContent = `${p.altitude.toLocaleString()} m`;
       document.getElementById('d-speed').textContent = `${p.speed} km/h`;
       document.getElementById('d-heading').textContent = `${getCardinal(p.heading)} (${p.heading}°)`;
       document.getElementById('d-icao24').textContent = p.icao24.toUpperCase();
+      
       const sqEl = document.getElementById('d-squawk');
       sqEl.textContent = p.squawk;
       sqEl.style.color = p.isAlert ? 'var(--military)' : 'var(--text-primary)';
-      document.getElementById('d-age').textContent = `há ${Math.round(p.lastContact)}s`;
+      
+      const age = Math.round((Date.now() / 1000) - p.lastContact);
+      document.getElementById('d-age').textContent = `há ${age}s`;
+      
       document.getElementById('link-fr24').href = `https://www.flightradar24.com/data/aircraft/${p.icao24}`;
       document.getElementById('link-fa').href = `https://www.flightaware.com/live/flight/${p.icao24.toUpperCase()}`;
     };
 
+    // Event Listeners
     document.querySelectorAll('.range-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
@@ -350,7 +319,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (state.notifEnabled && Notification.permission !== 'granted') {
         const perm = await Notification.requestPermission();
         if (perm !== 'granted') {
-          showStatus('Permissão negada.', 'error');
+          showStatus('Permissão de notificações negada.', 'error');
           state.notifEnabled = false;
           e.target.checked = false;
         }
