@@ -2,17 +2,24 @@ document.addEventListener('DOMContentLoaded', () => {
   const CONFIG = {
     defaultLat: 38.736946,
     defaultLon: -9.142685,
-    pollInterval: 15000, // 15 segundos
+    pollInterval: 20000, // 20 segundos (menos agressivo)
     alertRadius: 3000,
     alertAltitude: 1500,
-    // NOVO PROXY: Mais rápido e estável que o anterior
-    proxy: 'https://corsproxy.io/?'
+    // MÚLTIPLOS PROXIES CORS em fallback
+    proxies: [
+      'https://corsproxy.io/?',
+      'https://api.allorigins.win/raw?url=',
+      'https://api.codetabs.com/v1/proxy?quest='
+    ],
+    currentProxyIndex: 0,
+    retryDelay: 5000, // 5 segundos entre retries
+    maxRetries: 3
   };
 
   const state = {
     lat: CONFIG.defaultLat,
     lon: CONFIG.defaultLon,
-    range: parseInt(localStorage.getItem('msr_range')) || 5,
+    range: parseInt(localStorage.getItem('msr_range')) || 7,
     soundEnabled: localStorage.getItem('msr_sound') === 'true',
     notifEnabled: localStorage.getItem('msr_notif') === 'true',
     planes: new Map(),
@@ -20,7 +27,8 @@ document.addEventListener('DOMContentLoaded', () => {
     userMarker: null,
     rangeCircle: null,
     trailLine: null,
-    notifiedPlanes: new Set()
+    notifiedPlanes: new Set(),
+    consecutiveFailures: 0
   };
 
   const map = L.map('map', { zoomControl: false }).setView([state.lat, state.lon], 11);
@@ -118,88 +126,104 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   const fetchData = async () => {
-    // Não mostramos "A carregar..." a cada 15s para não piscar o ecrã, só se falhar
     const degRange = (state.range / 111) + 0.1;
     const targetUrl = `https://opensky-network.org/api/states/all?lamin=${state.lat - degRange}&lomin=${state.lon - degRange}&lamax=${state.lat + degRange}&lomax=${state.lon + degRange}`;
-    
-    // URL FINAL com o novo Proxy
-    const finalUrl = CONFIG.proxy + encodeURIComponent(targetUrl);
 
-    try {
-      // Aumentado para 15 segundos para evitar timeouts em redes lentas
-      const res = await fetch(finalUrl, { signal: AbortSignal.timeout(15000) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      
-      const data = await res.json();
-      if (!data.states || data.states.length === 0) {
-        updateUI([]);
-        return;
-      }
+    // Tentar cada proxy em ordem
+    for (let i = 0; i < CONFIG.proxies.length; i++) {
+      const proxyIndex = (CONFIG.currentProxyIndex + i) % CONFIG.proxies.length;
+      const proxy = CONFIG.proxies[proxyIndex];
+      const finalUrl = proxy + encodeURIComponent(targetUrl);
 
-      const now = Date.now() / 1000;
-      const newPlanes = new Map();
+      console.log(`[MySkyRadar] Tentando proxy ${proxyIndex + 1}/${CONFIG.proxies.length}`);
 
-      data.states.forEach(s => {
-        const icao24 = s[0];
-        const callsign = s[1] ? s[1].trim() : 'N/D';
-        const country = s[2] || 'Desconhecido';
-        const lon = s[5];
-        const lat = s[6];
-        const baroAlt = s[7];
-        const velocity = s[9];
-        const heading = s[10];
-        const squawk = s[14];
-        const onGround = s[8];
-        const lastContact = s[4];
+      try {
+        const res = await fetch(finalUrl, { signal: AbortSignal.timeout(12000) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        
+        const data = await res.json();
+        if (!data.states || data.states.length === 0) {
+          updateUI([]);
+          hideStatus();
+          state.consecutiveFailures = 0;
+          CONFIG.currentProxyIndex = proxyIndex; // Guardar qual proxy funcionou
+          return;
+        }
 
-        if (onGround || lat === null || lon === null) return;
+        const now = Date.now() / 1000;
+        const newPlanes = new Map();
 
-        const dist = getDistance(state.lat, state.lon, lat, lon);
-        if (dist > state.range * 1000) return;
+        data.states.forEach(s => {
+          const icao24 = s[0];
+          const callsign = s[1] ? s[1].trim() : 'N/D';
+          const country = s[2] || 'Desconhecido';
+          const lon = s[5];
+          const lat = s[6];
+          const baroAlt = s[7];
+          const velocity = s[9];
+          const heading = s[10];
+          const squawk = s[14];
+          const onGround = s[8];
+          const lastContact = s[4];
 
-        const prev = state.planes.get(icao24);
-        const isApproaching = prev ? dist < prev.dist : false;
-        const isMil = ['POR', 'FAB', 'ARMY', 'NAVY', 'MIL', 'RESCUE'].some(k => callsign.includes(k));
+          if (onGround || lat === null || lon === null) return;
 
-        const plane = {
-          icao24, callsign, country, lat, lon,
-          altitude: baroAlt !== null ? Math.round(baroAlt) : 0,
-          speed: velocity !== null ? Math.round(velocity * 3.6) : 0,
-          heading: heading !== null ? Math.round(heading) : 0,
-          squawk: squawk || 'N/D',
-          dist, isApproaching, isMil,
-          isAlert: squawk === '7700' || squawk === '7500' || squawk === '7600',
-          lastContact
-        };
+          const dist = getDistance(state.lat, state.lon, lat, lon);
+          if (dist > state.range * 1000) return;
 
-        newPlanes.set(icao24, plane);
+          const prev = state.planes.get(icao24);
+          const isApproaching = prev ? dist < prev.dist : false;
+          const isMil = ['POR', 'FAB', 'ARMY', 'NAVY', 'MIL', 'RESCUE'].some(k => callsign.includes(k));
 
-        if (state.notifEnabled && !state.notifiedPlanes.has(icao24)) {
-          if (dist <= CONFIG.alertRadius && plane.altitude <= CONFIG.alertAltitude) {
-            state.notifiedPlanes.add(icao24);
-            playBlip();
-            if (Notification.permission === 'granted') {
-              new Notification(`MySkyRadar: ${callsign}`, {
-                body: `A ${(dist/1000).toFixed(1)} km, ${plane.altitude}m.`,
-                icon: 'icons/icon-192x192.png'
-              });
+          const plane = {
+            icao24, callsign, country, lat, lon,
+            altitude: baroAlt !== null ? Math.round(baroAlt) : 0,
+            speed: velocity !== null ? Math.round(velocity * 3.6) : 0,
+            heading: heading !== null ? Math.round(heading) : 0,
+            squawk: squawk || 'N/D',
+            dist, isApproaching, isMil,
+            isAlert: squawk === '7700' || squawk === '7500' || squawk === '7600',
+            lastContact
+          };
+
+          newPlanes.set(icao24, plane);
+
+          if (state.notifEnabled && !state.notifiedPlanes.has(icao24)) {
+            if (dist <= CONFIG.alertRadius && plane.altitude <= CONFIG.alertAltitude) {
+              state.notifiedPlanes.add(icao24);
+              playBlip();
+              if (Notification.permission === 'granted') {
+                new Notification(`MySkyRadar: ${callsign}`, {
+                  body: `A ${(dist/1000).toFixed(1)} km, ${plane.altitude}m.`,
+                  icon: 'icons/icon-192x192.png'
+                });
+              }
             }
           }
-        }
-      });
+        });
 
-      state.planes = newPlanes;
-      updateUI();
-      hideStatus();
-      
-    } catch (err) {
-      console.warn('Timeout ou erro de rede no proxy. A tentar novamente no próximo ciclo...', err.message);
-      // Só mostramos erro no ecrã se falhar várias vezes seguidas, para não ser intrusivo
-      if (err.name === 'TimeoutError' || err.message.includes('Failed to fetch')) {
-        showStatus('Ligação lenta. A tentar novamente...', 'info');
-      } else {
-        showStatus('Erro ao obter dados.', 'error');
+        state.planes = newPlanes;
+        updateUI();
+        hideStatus();
+        state.consecutiveFailures = 0;
+        CONFIG.currentProxyIndex = proxyIndex;
+        console.log(`[MySkyRadar] Sucesso com proxy ${proxyIndex + 1}`);
+        return; // Sucesso, sair do loop
+        
+      } catch (err) {
+        console.warn(`[MySkyRadar] Proxy ${proxyIndex + 1} falhou:`, err.message);
+        continue; // Tentar próximo proxy
       }
+    }
+
+    // Todos os proxies falharam
+    state.consecutiveFailures++;
+    console.error(`[MySkyRadar] Todos os proxies falharam (tentativa ${state.consecutiveFailures})`);
+    
+    if (state.consecutiveFailures >= 3) {
+      showStatus('Problema de ligação. A tentar novamente...', 'error');
+    } else {
+      showStatus('Ligação lenta. A tentar novamente...', 'info');
     }
   };
 
@@ -324,7 +348,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   initGeo();
-  // Primeira carga imediata, depois o intervalo
   fetchData();
   setInterval(fetchData, CONFIG.pollInterval);
 });
