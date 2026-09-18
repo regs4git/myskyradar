@@ -1,5 +1,5 @@
 // VERSÃO DA CACHE - Incrementar sempre que houver alterações
-const CACHE_VERSION = 'v1.2';
+const CACHE_VERSION = 'v1.3';
 const CACHE_NAME = `myskyradar-${CACHE_VERSION}`;
 
 const ASSETS = [
