@@ -271,16 +271,40 @@ const fetchData = async () => {
     };
 
     // Event Listeners
-    document.querySelectorAll('.range-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
-        e.target.classList.add('active');
-        state.range = parseInt(e.target.dataset.range);
-        localStorage.setItem('msr_range', state.range);
-        updateUserMarker();
-        fetchData();
-      });
-    });
+document.querySelectorAll('.range-btn').forEach(btn => {
+  btn.addEventListener('click', (e) => {
+    document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
+    e.target.classList.add('active');
+    state.range = parseInt(e.target.dataset.range);
+    localStorage.setItem('msr_range', state.range);
+    
+    // MELHORIA: Recentralizar no GPS/Lisboa e ajustar zoom ao raio
+    updateUserMarker();
+    zoomToRange();
+    
+    // Buscar dados imediatamente
+    fetchData();
+  });
+});
+
+// Nova função para calcular bounds e dar zoom ao raio
+const zoomToRange = () => {
+  // Calcular bounds do círculo (aproximação simples)
+  const latDelta = state.range / 111; // 1 grau ≈ 111 km
+  const lonDelta = state.range / (111 * Math.cos(toRad(state.lat)));
+  
+  const bounds = L.latLngBounds(
+    [state.lat - latDelta, state.lon - lonDelta],
+    [state.lat + latDelta, state.lon + lonDelta]
+  );
+  
+  // Dar flyToBounds com padding para o círculo não colar nas bordas
+  map.flyToBounds(bounds, {
+    padding: [50, 50],
+    duration: 1,
+    maxZoom: 15
+  });
+};
 
     document.getElementById('sound-toggle').checked = state.soundEnabled;
     document.getElementById('sound-toggle').addEventListener('change', (e) => {
