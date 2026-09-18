@@ -121,3 +121,10 @@ body { font-family: var(--font); background: var(--bg-dark); color: var(--text-p
   .bottom-sheet { right: auto; width: 380px; bottom: 60px; left: 16px; max-height: 80vh; }
   .detail-grid { grid-template-columns: 1fr 1fr; }
 }
+
+.version {
+  font-size: 10px;
+  color: var(--text-secondary);
+  opacity: 0.6;
+  margin-top: 2px;
+}
